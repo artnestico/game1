@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pink Snake Game</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the game board and theme */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #fce7f3; /* Light pink background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden; /* Prevent body scroll */
+        }
+        .game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 1rem;
+            max-width: 95vw;
+            max-height: 95vh;
+        }
+        canvas {
+            border: 8px solid #db2777; /* Deep pink border */
+            background-color: #fbcfe8; /* Medium pink board */
+            box-shadow: 0 10px 20px rgba(219, 39, 119, 0.5);
+            border-radius: 12px;
+            touch-action: none; /* Important for touch controls */
+        }
+        /* Style the buttons and text */
+        .btn {
+            @apply px-6 py-3 bg-pink-600 text-white font-bold rounded-full shadow-lg transition duration-150 ease-in-out hover:bg-pink-700 hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-pink-300;
+        }
+        .score-board {
+            @apply text-pink-800 text-xl font-extrabold mb-4 p-2 bg-white rounded-lg shadow-md;
+        }
+        .message-box {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(253, 207, 219, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <h1 class="text-3xl font-black text-pink-900 mb-4 tracking-wider">PINK VIPER</h1>
+        <div id="score-board" class="score-board">Score: 0 | High Score: 0</div>
+        
+        <canvas id="gameCanvas"></canvas>
+
+        <div id="controls" class="mt-4 w-full max-w-sm flex justify-center space-x-4 md:hidden">
+            <!-- Simple virtual controls for mobile if needed, though swipe is primary -->
+            <button class="btn text-2xl" onclick="changeDirection('UP')">▲</button>
+            <button class="btn text-2xl" onclick="changeDirection('LEFT')">◀</button>
+            <button class="btn text-2xl" onclick="changeDirection('RIGHT')">▶</button>
+            <button class="btn text-2xl" onclick="changeDirection('DOWN')">▼</button>
+        </div>
+
+        <div id="message-overlay" class="message-box hidden">
+            <div class="bg-white p-8 rounded-xl shadow-2xl text-center border-4 border-pink-500 transform transition-all scale-100 md:scale-110">
+                <h2 id="message-text" class="text-4xl font-extrabold text-pink-800 mb-4"></h2>
+                <button id="startButton" class="btn text-xl mt-4" onclick="startGame()">Start Game</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script type="module">
+        // Firebase Imports (Standard boilerplate, even if not used)
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase Setup (Required boilerplate for the environment) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-snake-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db = null;
+        let auth = null;
+        let userId = 'guest'; // Default until authenticated
+        let highscoreDocRef = null;
+
+        /**
+         * Initializes Firebase and authenticates the user.
+         * Sets up the high score listener.
+         */
+        async function setupFirebaseAndAuth() {
+            try {
+                if (firebaseConfig) {
+                    const app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    userId = auth.currentUser?.uid || 'guest-' + crypto.randomUUID();
+                    console.log("Firebase initialized. User ID:", userId);
+
+                    // High Score stored publicly for competition
+                    const highscoreCollectionPath = `/artifacts/${appId}/public/data/snake_scores`;
+                    highscoreDocRef = doc(db, highscoreCollectionPath, 'global_high_score');
+                    
+                    // Set up real-time listener for the high score
+                    onSnapshot(highscoreDocRef, (docSnap) => {
+                        if (docSnap.exists()) {
+                            globalHighscore = docSnap.data().score || 0;
+                            updateScoreDisplay();
+                        } else {
+                            // Initialize document if it doesn't exist
+                            setDoc(highscoreDocRef, { score: 0, userId: 'none' }).catch(console.error);
+                        }
+                    }, (error) => {
+                        console.error("Error setting up high score listener:", error);
+                    });
+
+                } else {
+                    console.warn("Firebase config not found. Running without persistence.");
+                }
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+            }
+        }
+
+        /**
+         * Updates the global high score in Firestore if the current score is higher.
+         */
+        async function updateGlobalHighscore(newScore) {
+            if (db && highscoreDocRef && newScore > globalHighscore) {
+                try {
+                    await setDoc(highscoreDocRef, { 
+                        score: newScore, 
+                        userId: userId,
+                        timestamp: new Date().toISOString()
+                    }, { merge: true });
+                    console.log("Global high score updated to:", newScore);
+                } catch (e) {
+                    console.error("Error updating high score:", e);
+                }
+            }
+        }
+        // --- End Firebase Setup ---
+
+
+        // --- Game Logic ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreBoard = document.getElementById('score-board');
+        const messageOverlay = document.getElementById('message-overlay');
+        const messageText = document.getElementById('message-text');
+
+        const GRID_SIZE = 20; // Number of cells wide/tall
+        let CELL_SIZE = 0; // Calculated dynamically (Changed from const to let)
+        let GAME_SPEED = 150; // Initial speed (ms)
+
+        let snake = [];
+        let food = {};
+        let dx = 1; // Direction x (1: right, -1: left, 0: vertical)
+        let dy = 0; // Direction y (1: down, -1: up, 0: horizontal)
+        let score = 0;
+        let globalHighscore = 0;
+        let isGameOver = true;
+        let changingDirection = false;
+        let gameLoopInterval;
+
+        /**
+         * Sets canvas dimensions to be the largest possible square within the container.
+         */
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            const containerWidth = container.clientWidth;
+            const containerHeight = container.clientHeight;
+            
+            // Choose the smaller dimension to ensure a perfect square
+            const size = Math.min(containerWidth, containerHeight);
+
+            // Cap the size to prevent excessively large canvas on large screens
+            const effectiveSize = Math.min(size, 800); 
+
+            canvas.width = effectiveSize;
+            canvas.height = effectiveSize;
+            
+            // Calculate cell size based on new canvas size
+            CELL_SIZE = canvas.width / GRID_SIZE;
+            
+            // Redraw game state after resize
+            if (!isGameOver) {
+                 drawGame();
+            }
+        }
+        
+        /**
+         * Initializes the snake's starting position and direction.
+         */
+        function createSnake() {
+            snake = [
+                { x: 5, y: 10 },
+                { x: 4, y: 10 },
+                { x: 3, y: 10 }
+            ];
+            dx = 1;
+            dy = 0;
+            score = 0;
+        }
+
+        /**
+         * Generates a new food position that is not on the snake.
+         */
+        function generateFood() {
+            let newFood;
+            do {
+                newFood = {
+                    x: Math.floor(Math.random() * GRID_SIZE),
+                    y: Math.floor(Math.random() * GRID_SIZE)
+                };
+            } while (snake.some(segment => segment.x === newFood.x && segment.y === newFood.y));
+            food = newFood;
+        }
+
+        /**
+         * Draws a single cell on the canvas.
+         * @param {number} x The grid x-coordinate.
+         * @param {number} y The grid y-coordinate.
+         * @param {string} color The fill color.
+         */
+        function drawCell(x, y, color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            ctx.strokeStyle = '#fce7f3'; // Very light pink stroke for segments
+            ctx.strokeRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        }
+
+        /**
+         * Clears the canvas and redraws the game state (snake and food).
+         */
+        function drawGame() {
+            // Clear the previous frame to prepare for redraw
+            // Note: ctx.clearRect(0, 0, canvas.width, canvas.height); is done in gameLoop
+            
+            // Draw all segments of the snake
+            snake.forEach((segment, index) => {
+                const color = index === 0 ? '#d80073' : '#FF69B4'; // Darker pink head
+                drawCell(segment.x, segment.y, color);
+            });
+
+            // Draw the food (e.g., a bright circle or block)
+            ctx.fillStyle = '#10b981'; // Mint Green/Emerald for contrast
+            ctx.shadowColor = '#10b981';
+            ctx.shadowBlur = 10;
+            ctx.beginPath();
+            ctx.arc(
+                food.x * CELL_SIZE + CELL_SIZE / 2, 
+                food.y * CELL_SIZE + CELL_SIZE / 2, 
+                CELL_SIZE / 2 * 0.8, // 80% of cell size
+                0, 2 * Math.PI
+            );
+            ctx.fill();
+            ctx.shadowBlur = 0; // Reset shadow
+        }
+
+        /**
+         * Moves the snake forward by one segment.
+         */
+        function moveSnake() {
+            // Create the new head
+            const head = { x: snake[0].x + dx, y: snake[0].y + dy };
+            snake.unshift(head);
+            changingDirection = false; // Allow direction change on the next tick
+
+            // Check if food was eaten
+            if (head.x === food.x && head.y === food.y) {
+                score += 10;
+                // Increase speed slightly
+                GAME_SPEED = Math.max(50, GAME_SPEED - 2); 
+                clearInterval(gameLoopInterval);
+                gameLoopInterval = setInterval(gameLoop, GAME_SPEED);
+                generateFood();
+            } else {
+                // Remove the tail if no food was eaten
+                snake.pop();
+            }
+        }
+
+        /**
+         * Checks for collision with walls or self.
+         * @returns {boolean} True if a collision occurred.
+         */
+        function checkCollision() {
+            const head = snake[0];
+            // Check wall collision
+            const hitWall = head.x < 0 || head.x >= GRID_SIZE || head.y < 0 || head.y >= GRID_SIZE;
+            
+            // Check self collision (start checking from the 4th segment)
+            const hitSelf = snake.slice(1).some(segment => segment.x === head.x && segment.y === head.y);
+
+            return hitWall || hitSelf;
+        }
+
+        /**
+         * The main game loop: moves the snake and redraws.
+         */
+        function gameLoop() {
+            if (isGameOver) return;
+
+            // Clear the entire canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height); 
+            
+            moveSnake();
+            if (checkCollision()) {
+                endGame();
+                return;
+            }
+            drawGame();
+            updateScoreDisplay();
+        }
+
+        /**
+         * Ends the game, updates high score, and shows the message overlay.
+         */
+        function endGame() {
+            isGameOver = true;
+            clearInterval(gameLoopInterval);
+            messageText.textContent = `Game Over! Your Score: ${score}`;
+            document.getElementById('startButton').textContent = 'Play Again';
+            messageOverlay.classList.remove('hidden');
+
+            if (score > globalHighscore) {
+                globalHighscore = score;
+                updateGlobalHighscore(score); // Save to Firestore
+            }
+            updateScoreDisplay();
+        }
+
+        /**
+         * Starts or restarts the game.
+         */
+        window.startGame = function() {
+            if (!isGameOver) return; // Prevent double start
+            isGameOver = false;
+            changingDirection = false;
+            createSnake();
+            generateFood();
+            GAME_SPEED = 150; // Reset speed
+            messageOverlay.classList.add('hidden');
+            
+            // Ensure canvas is resized before starting the loop
+            resizeCanvas();
+            
+            // Start the game loop
+            gameLoopInterval = setInterval(gameLoop, GAME_SPEED);
+            drawGame(); // Initial draw
+        }
+
+        /**
+         * Updates the score and high score display.
+         */
+        function updateScoreDisplay() {
+            scoreBoard.textContent = `Score: ${score} | High Score: ${globalHighscore}`;
+        }
+        
+        /**
+         * Handles keyboard input to change direction.
+         */
+        function handleKeyInput(event) {
+            if (isGameOver || changingDirection) return;
+
+            const keyPressed = event.key;
+            let newDx = dx;
+            let newDy = dy;
+
+            switch (keyPressed) {
+                case 'ArrowUp':
+                case 'w':
+                    if (dy === 1) return; 
+                    newDx = 0; newDy = -1; break;
+                case 'ArrowDown':
+                case 's':
+                    if (dy === -1) return;
+                    newDx = 0; newDy = 1; break;
+                case 'ArrowLeft':
+                case 'a':
+                    if (dx === 1) return;
+                    newDx = -1; newDy = 0; break;
+                case 'ArrowRight':
+                case 'd':
+                    if (dx === -1) return;
+                    newDx = 1; newDy = 0; break;
+                default:
+                    return; // Ignore other keys
+            }
+
+            dx = newDx;
+            dy = newDy;
+            changingDirection = true; // Block further changes until next game tick
+        }
+        
+        // Expose to window for mobile buttons
+        window.changeDirection = function(direction) {
+             const mockEvent = { key: '' };
+             switch (direction) {
+                 case 'UP': mockEvent.key = 'ArrowUp'; break;
+                 case 'DOWN': mockEvent.key = 'ArrowDown'; break;
+                 case 'LEFT': mockEvent.key = 'ArrowLeft'; break;
+                 case 'RIGHT': mockEvent.key = 'ArrowRight'; break;
+             }
+             handleKeyInput(mockEvent);
+        }
+
+        // --- Touch/Swipe Controls ---
+        let touchstartX = 0;
+        let touchendX = 0;
+        let touchstartY = 0;
+        let touchendY = 0;
+        const SWIPE_THRESHOLD = 50; // Minimum distance for a swipe
+
+        function handleGesture() {
+            if (isGameOver || changingDirection) return;
+
+            const diffX = touchendX - touchstartX;
+            const diffY = touchendY - touchstartY;
+
+            // Check if movement is significant enough
+            if (Math.abs(diffX) < SWIPE_THRESHOLD && Math.abs(diffY) < SWIPE_THRESHOLD) return;
+
+            let newDx = dx;
+            let newDy = dy;
+
+            if (Math.abs(diffX) > Math.abs(diffY)) {
+                // Horizontal swipe
+                if (diffX > 0) {
+                    if (dx === -1) return; // Cannot turn back on self
+                    newDx = 1; newDy = 0; // Right
+                } else {
+                    if (dx === 1) return; // Cannot turn back on self
+                    newDx = -1; newDy = 0; // Left
+                }
+            } else {
+                // Vertical swipe
+                if (diffY > 0) {
+                    if (dy === -1) return; // Cannot turn back on self
+                    newDx = 0; newDy = 1; // Down
+                } else {
+                    if (dy === 1) return; // Cannot turn back on self
+                    newDx = 0; newDy = -1; // Up
+                }
+            }
+            
+            dx = newDx;
+            dy = newDy;
+            changingDirection = true; 
+        }
+
+        function initTouchControls() {
+            canvas.addEventListener('touchstart', e => {
+                touchstartX = e.changedTouches[0].screenX;
+                touchstartY = e.changedTouches[0].screenY;
+            });
+
+            canvas.addEventListener('touchend', e => {
+                touchendX = e.changedTouches[0].screenX;
+                touchendY = e.changedTouches[0].screenY;
+                handleGesture();
+            });
+        }
+        // --- End Touch/Swipe Controls ---
+
+
+        // --- Initialization on Load ---
+        window.onload = function () {
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            document.addEventListener('keydown', handleKeyInput);
+            initTouchControls();
+            setupFirebaseAndAuth().then(() => {
+                // Show initial message after auth attempt
+                messageText.textContent = "Press Start to begin!";
+                messageOverlay.classList.remove('hidden');
+                updateScoreDisplay();
+            });
+        };
+
+        // If the module is loaded and the DOM is ready, call init immediately
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+            window.onload();
+        }
+    </script>
+</body>
+</html>
